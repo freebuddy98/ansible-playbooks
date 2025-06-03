@@ -1,0 +1,9 @@
+---
+- name: Hello World Playbook
+  hosts: server
+  gather_facts: no # 对于这个简单的 playbook，我们不需要收集 facts
+
+  tasks:
+    - name: Print Hello World
+      ansible.builtin.debug:
+        msg: "Hello World!"
