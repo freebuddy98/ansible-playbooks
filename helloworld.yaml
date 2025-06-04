@@ -4,6 +4,6 @@
   gather_facts: no # 对于这个简单的 playbook，我们不需要收集 facts
 
   tasks:
-    - name: Print Hello World
-      ansible.builtin.debug:
-        msg: "Hello World!"
+    - name: Send a Ping, expect a Pong
+      ansible.builtin.ping:
+        # ping 模块没有额外的参数，它只是尝试连接并返回 "pong"

@@ -1,0 +1,80 @@
+---
+- name: Deploy Redis 7.4.4 with Docker
+  hosts: server
+  become: true  # 大多数 Docker 操作需要 sudo 权限
+  vars:
+    redis_image: "redis"
+    redis_version: "7.4.4"
+    redis_container_name: "my-redis-instance"
+    redis_host_port: 7901
+    redis_container_port: 6379 # Redis 默认端口
+
+  tasks:
+    - name: Ensure Docker is installed and service is running
+      block:
+        - name: Check if Docker is installed (example for Debian/Ubuntu)
+          ansible.builtin.command: docker --version
+          register: docker_check
+          changed_when: false
+          ignore_errors: true
+
+        - name: Fail if Docker is not installed
+          ansible.builtin.fail:
+            msg: "Docker is not installed on {{ inventory_hostname }}. Please install Docker first."
+          when: docker_check.rc != 0
+
+        - name: Ensure Docker service is active
+          ansible.builtin.service:
+            name: docker
+            state: started
+            enabled: true
+      rescue:
+        - name: Docker check/service management failed
+          ansible.builtin.debug:
+            msg: "Could not verify Docker installation or start service. Ensure Docker is properly installed and running on {{ inventory_hostname }}."
+
+    - name: Ensure Docker Python SDK is installed (on managed node)
+      ansible.builtin.pip:
+        name: docker
+        state: present
+      # 注意：此任务假定 pip 已安装在目标主机上。
+      # 如果您使用的是 Ansible 控制节点上的 Docker 套接字进行管理 (罕见)，
+      # 则此 SDK 需要安装在控制节点上。
+
+    - name: Pull Redis Docker image {{ redis_image }}:{{ redis_version }}
+      community.docker.docker_image:
+        name: "{{ redis_image }}:{{ redis_version }}"
+        source: pull
+        state: present
+      register: image_pull_status
+      retries: 3 # 可选：如果拉取失败，尝试几次
+      delay: 10  # 可选：重试前的延迟（秒）
+
+    - name: Stop and remove any existing container with the same name
+      community.docker.docker_container:
+        name: "{{ redis_container_name }}"
+        state: absent
+      # 这一步是为了确保我们启动的是一个全新的、符合配置的容器。
+      # 如果您希望更新现有容器，逻辑会更复杂。
+
+    - name: Run Redis container
+      community.docker.docker_container:
+        name: "{{ redis_container_name }}"
+        image: "{{ redis_image }}:{{ redis_version }}"
+        state: started         # 确保容器正在运行
+        restart_policy: always # Docker 重启时或容器退出时自动重启容器
+        ports:
+          - "{{ redis_host_port }}:{{ redis_container_port }}" # 格式 "host_port:container_port"
+        # 如果需要持久化数据，可以添加 volumes:
+        # volumes:
+        #   - "/opt/redis/data:/data"
+        # 如果需要自定义配置文件，可以添加:
+        #   - "/opt/redis/conf/redis.conf:/usr/local/etc/redis/redis.conf"
+        # 如果需要设置密码 (强烈建议生产环境使用):
+        # command: "redis-server --requirepass YourStrongPasswordHere"
+      register: container_run_status
+
+    - name: Display Redis container status
+      ansible.builtin.debug:
+        msg: "Redis container '{{ redis_container_name }}' is running and mapped to port {{ redis_host_port }} on the host. Image: {{ redis_image }}:{{ redis_version }}"
+      when: container_run_status.changed or (container_run_status.container.State.Running is defined and container_run_status.container.State.Running)

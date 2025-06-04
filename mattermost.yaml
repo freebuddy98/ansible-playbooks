@@ -1,0 +1,153 @@
+---
+- name: Deploy Mattermost using Docker containers with NGINX reverse proxy
+  hosts: server
+  become: yes
+  vars:
+    mattermost_domain: "{{ mattermost_domain | default('localhost') }}"
+    mattermost_http_port: "{{ mattermost_http_port | default('80') }}"
+    mattermost_https_port: "{{ mattermost_https_port | default('443') }}"
+    mattermost_directory: "/opt/mattermost-docker"
+    mattermost_image: "mattermost-team-edition"
+    existing_cert_file: "{{ existing_cert_file | mandatory }}"
+    existing_key_file: "{{ existing_key_file | mandatory }}"
+  
+  tasks:
+    # Step 2: Deploy Mattermost on Docker
+    - name: "Step 2.1: Clone the repository and enter the directory"
+      block:
+        - name: Install git
+          apt:
+            name: git
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Clone Mattermost Docker repository
+          git:
+            repo: https://github.com/mattermost/docker
+            dest: "{{ mattermost_directory }}"
+            force: yes
+
+        - name: Change to mattermost directory
+          file:
+            path: "{{ mattermost_directory }}"
+            state: directory
+            mode: '0755'
+
+    - name: "Step 2.2: Create .env file by copying and adjusting env.example"
+      block:
+        - name: Copy env.example to .env
+          copy:
+            src: "{{ mattermost_directory }}/env.example"
+            dest: "{{ mattermost_directory }}/.env"
+            remote_src: yes
+
+        - name: Replace DOMAIN value in .env file
+          lineinfile:
+            path: "{{ mattermost_directory }}/.env"
+            regexp: '^DOMAIN=.*'
+            line: "DOMAIN={{ mattermost_domain }}:{{ mattermost_https_port }}"
+
+        - name: Replace HTTP_PORT value in .env file
+          lineinfile:
+            path: "{{ mattermost_directory }}/.env"
+            regexp: '^HTTP_PORT=.*'
+            line: "HTTP_PORT={{ mattermost_http_port }}"
+
+        - name: Replace HTTPS_PORT value in .env file
+          lineinfile:
+            path: "{{ mattermost_directory }}/.env"
+            regexp: '^HTTPS_PORT=.*'
+            line: "HTTPS_PORT={{ mattermost_https_port }}"
+
+        - name: Set MATTERMOST_IMAGE to team edition
+          lineinfile:
+            path: "{{ mattermost_directory }}/.env"
+            regexp: '^MATTERMOST_IMAGE=.*'
+            line: "MATTERMOST_IMAGE={{ mattermost_image }}"
+
+    - name: "Step 2.3: Create required directories and set their permissions"
+      block:
+        - name: Create Mattermost directories
+          file:
+            path: "{{ mattermost_directory }}/volumes/app/mattermost/{{ item }}"
+            state: directory
+            recurse: yes
+          loop:
+            - config
+            - data
+            - logs
+            - plugins
+            - client/plugins
+            - bleve-indexes
+
+        - name: Set ownership of Mattermost directories
+          file:
+            path: "{{ mattermost_directory }}/volumes/app/mattermost"
+            owner: "2000"
+            group: "2000"
+            recurse: yes
+
+    - name: "Step 2.4: Configure TLS for NGINX using pre-existing certificate and key"
+      block:
+        - name: Create certificate directory
+          file:
+            path: "{{ mattermost_directory }}/volumes/web/cert"
+            state: directory
+            mode: '0755'
+            recurse: yes
+
+        - name: Copy pre-existing certificate to cert.pem
+          copy:
+            src: "{{ existing_cert_file }}"
+            dest: "{{ mattermost_directory }}/volumes/web/cert/cert.pem"
+            mode: '0644'
+            remote_src: yes
+
+        - name: Copy pre-existing key to key-no-password.pem
+          copy:
+            src: "{{ existing_key_file }}"
+            dest: "{{ mattermost_directory }}/volumes/web/cert/key-no-password.pem"
+            mode: '0600'
+            remote_src: yes
+
+    - name: "Step 2.5: Deploy Mattermost with NGINX reverse proxy"
+      block:
+        - name: Deploy Mattermost using Docker Compose (with NGINX)
+          shell: |
+            cd {{ mattermost_directory }}
+            docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+          environment:
+            DOCKER_CLI_HINTS: "false"
+
+        - name: Wait for NGINX to be ready
+          uri:
+            url: "https://{{ mattermost_domain }}:{{ mattermost_https_port }}"
+            method: GET
+            status_code: 200
+            validate_certs: no
+          register: result
+          until: result.status == 200
+          retries: 30
+          delay: 10
+
+    - name: "Step 2.6: Display access information"
+      debug:
+        msg: 
+          - "Mattermost has been successfully deployed with NGINX reverse proxy!"
+          - "Access your Mattermost deployment at: https://{{ mattermost_domain }}:{{ mattermost_https_port }}/"
+          - "To shut down the deployment, run:"
+          - "cd {{ mattermost_directory }} && docker compose -f docker-compose.yml -f docker-compose.nginx.yml down"
+
+    - name: "Step 3: Create first system admin user (manual step)"
+      debug:
+        msg:
+          - "Next steps:"
+          - "1. Navigate to https://{{ mattermost_domain }}:{{ mattermost_https_port }}/ in your browser"
+          - "2. Create your first Mattermost system admin user"
+          - "3. Invite more users and explore the Mattermost platform"
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
